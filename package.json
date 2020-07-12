@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "description": "Automaticaly enroll in Wodify classes",
   "main": "main.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "author": "Leland Jansen <hello@lelandjansen.com>",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lelandjansen/wodify-enroll.git"
+  },
   "dependencies": {
     "dotenv": "^8.2.0",
     "mailgun-js": "^0.22.0",

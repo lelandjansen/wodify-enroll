@@ -10,16 +10,16 @@ const VIEW_WIDTH = 1024;
 const WEEKDAYS = [
   'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'
 ];
-const WODIFY_CALENDAR_TABLE_ID =
-    'AthleteTheme_wt6_block_wtMainContent_wt9_wtClassTable';
-const WODIFY_CALENDAR_CLASS_UNAVAILABLE_CLASS = 'icon-calendar--disabled';
+const WODIFY_CALENDAR_BANNER_NOTIFICATION_ID =
+    'AthleteTheme_wt6_block_RichWidgets_wt28_block_wtSanitizedHtml3';
 const WODIFY_CALENDAR_CLASS_ALREADY_ENROLLED_CLASS = 'icon-ticket';
 const WODIFY_CALENDAR_CLASS_ENROLL_CLASS = 'icon-calendar';
 const WODIFY_CALENDAR_CLASS_FULL_SUBSTRING = 'waitlist';
+const WODIFY_CALENDAR_CLASS_UNAVAILABLE_CLASS = 'icon-calendar--disabled';
+const WODIFY_CALENDAR_TABLE_ID =
+    'AthleteTheme_wt6_block_wtMainContent_wt9_wtClassTable';
 const WODIFY_CALENDAR_URI =
     'https://app.wodify.com/Schedule/CalendarListView.aspx';
-const WODIFY_BANNER_NOTIFICATION_ID =
-    'AthleteTheme_wt6_block_RichWidgets_wt28_block_wtSanitizedHtml3';
 const WODIFY_LOGIN_FORM_ID = 'form[id="FormLogin"]';
 const WODIFY_LOGIN_PASSWORD_INPUT_ID = 'input[id="Input_Password"]';
 const WODIFY_LOGIN_SUBMIT_BUTTON_ID = 'button[type="submit"]';
@@ -63,9 +63,11 @@ async function getDesiredOpenClasses(page, config) {
       if (!desiredClassWeekdays.includes(weekday)) continue;
 
       const columns = row.querySelectorAll('td');
+      // clang-format off
       const [classColumn, reservationStatusColumn, enrollActionColumn,
           cancelActionColumn, programColumn, gymLocationColumn, startTimeColumn,
           durationColumn, coachColumn] = columns;
+      // clang-format on
 
       const program = programColumn.innerText.toLowerCase();
       const gymLocation = gymLocationColumn.innerText.toLowerCase();
@@ -117,7 +119,8 @@ async function getDesiredOpenClasses(page, config) {
   }, WEEKDAYS, config);
 }
 
-async function sendEmailNotification(mailgun, enrolledClasses, credentials) {
+async function sendEnrolledEmailNotification(
+    mailgun, enrolledClasses, credentials) {
   const classPlurality = enrolledClasses.length == 1 ? '' : 'es';
   let message = `Registered in the following Wodify class${classPlurality}:\n`;
   enrolledClasses.forEach(enrolledClass => {
@@ -179,6 +182,7 @@ async function run(
   };
 
   while (true) {
+    log('Checking available classes...');
     let startTime = new Date().getTime();
 
     if (firstVisit) {
@@ -188,29 +192,25 @@ async function run(
     }
     firstVisit = false;
 
-    log('Checking for available classes...');
     const desiredOpenClasses = await getDesiredOpenClasses(page, enrollConfig);
-    if (0 < desiredOpenClasses.length) {
-      log(`${desiredOpenClasses.length} desired class(es) available.`);
-    } else {
-      log('No desired classes available.')
-    }
+    log(`${desiredOpenClasses.length} desired classes available.`);
     for (const desiredClass of desiredOpenClasses) {
       log(`Attempting to enroll in ${desiredClass.weekday}'s ${
           desiredClass.time} ${desiredClass.program} class in ${
           desiredClass.gymLocation}...`);
       await page.click(`#${desiredClass.enrollActionId}`);
-      await page.waitForSelector(`#${WODIFY_BANNER_NOTIFICATION_ID}`);
+      await page.waitForSelector(`#${WODIFY_CALENDAR_BANNER_NOTIFICATION_ID}`);
     }
     if (0 < desiredOpenClasses.length) {
-      log('Finished attemting to enroll in all open classes.');
+      log(`Finished attemting to enroll in ${
+          desiredOpenClasses.length} desired open class(es).`);
       await page.screenshot({path: SCREENSHOT_FILE_PATH, fullPage: true});
     }
 
     if (mailgun !== undefined && 0 < desiredOpenClasses.length) {
       log('Sending email notification...');
       try {
-        await sendEmailNotification(
+        await sendEnrolledEmailNotification(
             mailgun, desiredOpenClasses, mailgunCredentials);
         log('Sent email notification.');
       } catch (error) {
