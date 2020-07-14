@@ -5,8 +5,8 @@ const fs = require('fs');
 const mailgunjs = require('mailgun-js');
 const puppeteer = require('puppeteer');
 
-const DEFAULT_CONTINUOUS_POLL_BEFORE_DESIRED_CLASS_SECONDS = 300;
-const DEFAULT_CONTINUOUS_POLL_AFTER_DESIRED_CLASS_SECONDS = 300;
+const DEFAULT_CONTINUOUS_POLL_AFTER_ENROLLMENT_OPENS_SECONDS = 300;
+const DEFAULT_CONTINUOUS_POLL_BEFORE_ENROLLMENT_OPENS_SECONDS = 300;
 const DEFAULT_POLL_PERIOD_SECONDS = 60;
 const SCREENSHOT_FILE_PATH = 'enrolled.png';
 const VIEW_HEIGHT = 768;
@@ -157,8 +157,9 @@ async function sendErrorEmailNotification(mailgun, error, credentials) {
 
 async function run(
     wodifyCredentials, mailgunCredentials, enrollList, pollPeriodMilliseconds,
-    continuousPollBeforeDesiredClassMilliseconds,
-    continuousPollAfterDesiredClassMilliseconds, mailgun) {
+    enrollmentOpeningBeforeClassMilliseconds,
+    continuousPollBeforeEnrollmentOpensMilliseconds,
+    continuousPollAfterEnrollmentOpensMilliseconds, mailgun) {
   const browser = await puppeteer.launch();
   const page = await browser.newPage();
   await page.setViewport({width: VIEW_WIDTH, height: VIEW_HEIGHT});
@@ -241,35 +242,41 @@ async function run(
 
     const endDate = new Date();
     const millisecondsUntilNextCheck = (() => {
-      const elapsedTime = endDate - startDate;
+      const elapsedTime = endDate.getTime() - startDate.getTime();
       const defaultDelayMilliseconds = pollPeriodMilliseconds - elapsedTime;
-      const weekday = WEEKDAYS[endDate.getDay()];
+      const eligibleEnrollmentDate = new Date(
+          endDate.getTime() + enrollmentOpeningBeforeClassMilliseconds);
+      const weekday = WEEKDAYS[eligibleEnrollmentDate.getDay()];
       const enrollInfo = enrollList[weekday];
       if (enrollInfo === undefined) return defaultDelayMilliseconds;
-      const timePattern = /(\d{1,2})\:(\d\d)\s(a|p)m/;
-      const classTime = enrollInfo['time'].toLowerCase().match(timePattern);
-      const afternoonClass = classTime[3] === 'p';
-      const classHours =
-          (parseInt(classTime[1]) % 12) + (afternoonClass ? 12 : 0);
-      const classMinutes = parseInt(classTime[2]);
       const classDate = (() => {
-        let date = new Date(endDate);
+        const timePattern = /(\d{1,2})\:(\d\d)\s(a|p)m/;
+        const classTime = enrollInfo['time'].toLowerCase().match(timePattern);
+        const afternoonClass = classTime[3] === 'p';
+        const classHours =
+            (parseInt(classTime[1]) % 12) + (afternoonClass ? 12 : 0);
+        const classMinutes = parseInt(classTime[2]);
+        let date = new Date(eligibleEnrollmentDate);
         date.setHours(classHours);
         date.setMinutes(classMinutes);
         date.setSeconds(0);
         return date;
       })();
       const minContinuousPollDate = new Date(
-          classDate.getTime() - continuousPollBeforeDesiredClassMilliseconds);
+          classDate.getTime() -
+          continuousPollBeforeEnrollmentOpensMilliseconds);
       const maxContinuousPollDate = new Date(
-          classDate.getTime() + continuousPollAfterDesiredClassMilliseconds);
-      if (minContinuousPollDate < endDate && endDate < maxContinuousPollDate) {
+          classDate.getTime() + continuousPollAfterEnrollmentOpensMilliseconds);
+      if (minContinuousPollDate < eligibleEnrollmentDate &&
+          eligibleEnrollmentDate < maxContinuousPollDate) {
         return 0;
       }
-      const nextPollDate = new Date(endDate + defaultDelayMilliseconds);
-      if (endDate < minContinuousPollDate &&
-          minContinuousPollDate < nextPollDate) {
-        return minContinuousPollDate - endDate;
+      const nextOffsetPollDate =
+          new Date(eligibleEnrollmentDate.getTime() + defaultDelayMilliseconds);
+      if (eligibleEnrollmentDate < minContinuousPollDate &&
+          minContinuousPollDate < nextOffsetPollDate) {
+        return minContinuousPollDate.getTime() -
+            eligibleEnrollmentDate.getTime();
       }
       return defaultDelayMilliseconds;
     })();
@@ -304,13 +311,15 @@ async function run(
   const mailgunDomain = process.env.MAILGUN_DOMAIN;
   const pollPeriodMilliseconds =
       (process.env.POLL_PERIOD_SECONDS || DEFAULT_POLL_PERIOD_SECONDS) * 1000;
-  const continuousPollBeforeDesiredClassMilliseconds =
-      (process.env.CONTINUOUS_POLL_BEFORE_DESIRED_CLASS_SECONDS ||
-       DEFAULT_CONTINUOUS_POLL_BEFORE_DESIRED_CLASS_SECONDS) *
+  const enrollmentOpeningBeforeClassMinutes =
+      process.env.ENROLLMENT_OPENING_BEFORE_CLASS_MINUTES;
+  const continuousPollBeforeEnrollmentOpensMilliseconds =
+      (process.env.CONTINUOUS_POLL_BEFORE_ENROLLMENT_OPENS_SECONDS ||
+       DEFAULT_CONTINUOUS_POLL_BEFORE_ENROLLMENT_OPENS_SECONDS) *
       1000;
-  const continuousPollAfterDesiredClassMilliseconds =
-      (process.env.CONTINUOUS_POLL_AFTER_DESIRED_CLASS_SECONDS ||
-       DEFAULT_CONTINUOUS_POLL_AFTER_DESIRED_CLASS_SECONDS) *
+  const continuousPollAfterEnrollmentOpensMilliseconds =
+      (process.env.CONTINUOUS_POLL_AFTER_ENROLLENT_OPENS_SECONDS ||
+       DEFAULT_CONTINUOUS_POLL_AFTER_ENROLLMENT_OPENS_SECONDS) *
       1000;
 
   const enrollList = JSON.parse(fs.readFileSync(enrollListFile));
@@ -327,6 +336,13 @@ async function run(
     username: wodifyUsername,
     password: wodifyPassword,
   };
+
+  if (enrollmentOpeningBeforeClassMinutes === undefined) {
+    console.log('Missing enrollment opening time before class.');
+    process.exit(1);
+  }
+  const enrollmentOpeningBeforeClassMilliseconds =
+      enrollmentOpeningBeforeClassMinutes * 60 * 1000;
 
   if (emailNotificationRecipient === undefined) {
     log('Warning: Missing an email notification recipient. No email ' +
@@ -359,8 +375,9 @@ async function run(
 
   try {
     run(wodifyCredentials, mailgunCredentials, enrollList,
-        pollPeriodMilliseconds, continuousPollBeforeDesiredClassMilliseconds,
-        continuousPollAfterDesiredClassMilliseconds, mailgun);
+        pollPeriodMilliseconds, enrollmentOpeningBeforeClassMilliseconds,
+        continuousPollBeforeEnrollmentOpensMilliseconds,
+        continuousPollAfterEnrollmentOpensMilliseconds, mailgun);
   } catch (error) {
     sendErrorEmailNotification(mailgun, error, mailgunCredentials);
   }

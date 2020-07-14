@@ -19,6 +19,7 @@ Configure Wodify Enroll using the following environment variables.
 # Required
 WODIFY_USERNAME="username"
 WODIFY_PASSWORD="password"
+ENROLLMENT_OPENING_BEFORE_CLASS_MINUTES=4320
 
 # Optionally receive email notifications after enrolling in a class
 EMAIL_NOTIFICATION_RECIPIENT="someone@example.com"
@@ -38,6 +39,9 @@ CONTINUOUS_POLL_AFTER_DESIRED_CLASS_SECONDS=300
 Specify the classes in which you wish to enroll. The weekday keys should be
 written in lowercase. The `location`, `program`, and `time` keys' values must
 match the text in Wodify's calendar but are case-insensitive.
+
+Note: Wodify Enroll assumes that the host machine is in the same timezone as
+the desired classes.
 
 ```json
 enroll_list.json

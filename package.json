@@ -12,6 +12,7 @@
   "dependencies": {
     "dotenv": "^8.2.0",
     "mailgun-js": "^0.22.0",
+    "npm": "^6.14.6",
     "puppeteer": "^5.0.0"
   }
 }
