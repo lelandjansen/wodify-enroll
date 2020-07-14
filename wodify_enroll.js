@@ -1,9 +1,13 @@
+'use strict';
+
 const dotenv = require('dotenv').config();
 const fs = require('fs');
 const mailgunjs = require('mailgun-js');
 const puppeteer = require('puppeteer');
 
-const DEFAULT_POLL_PERIOD_SECONDS = 30;
+const DEFAULT_CONTINUOUS_POLL_BEFORE_DESIRED_CLASS_SECONDS = 300;
+const DEFAULT_CONTINUOUS_POLL_AFTER_DESIRED_CLASS_SECONDS = 300;
+const DEFAULT_POLL_PERIOD_SECONDS = 60;
 const SCREENSHOT_FILE_PATH = 'enrolled.png';
 const VIEW_HEIGHT = 768;
 const VIEW_WIDTH = 1024;
@@ -16,6 +20,8 @@ const WODIFY_CALENDAR_CLASS_ALREADY_ENROLLED_CLASS = 'icon-ticket';
 const WODIFY_CALENDAR_CLASS_ENROLL_CLASS = 'icon-calendar';
 const WODIFY_CALENDAR_CLASS_FULL_SUBSTRING = 'waitlist';
 const WODIFY_CALENDAR_CLASS_UNAVAILABLE_CLASS = 'icon-calendar--disabled';
+const WODIFY_CALENDAR_LOAD_TIMEOUT_MILLISECONDS = 20 * 1000;
+const WODIFY_CALENDAR_LOAD_TIMEOUT_RETRY_DELAY_MILLISECONDS = 5 * 1000;
 const WODIFY_CALENDAR_TABLE_ID =
     'AthleteTheme_wt6_block_wtMainContent_wt9_wtClassTable';
 const WODIFY_CALENDAR_URI =
@@ -27,7 +33,7 @@ const WODIFY_LOGIN_URI = 'https://app.wodify.com/SignIn/Login';
 const WODIFY_LOGIN_USERNAME_INPUT_ID = 'input[id="Input_UserName"]';
 
 function log(message = '') {
-  console.log(`[${new Date().toISOString()}] ${message}`);
+  process.stderr.write(`[${new Date().toISOString()}] ${message}\n`);
 }
 
 function capitalize(string) {
@@ -79,25 +85,24 @@ async function getDesiredOpenClasses(page, config) {
       const desiredLocation =
           config.enrollList[weekday]['location'].toLowerCase();
 
-      if (!(startTime.toLowerCase().includes(desiredStartTime) &&
+      if (!(startTime.trim().toLowerCase() === desiredStartTime &&
             program.toLowerCase().includes(desiredProgram) &&
             gymLocation.toLowerCase().includes(desiredLocation))) {
         continue;
       }
 
-      const column = enrollActionColumn;
       const unavailableSelector =
           `.${config.wodifyCalendarClassUnavailableClass}`;
       const alreadyEnrolledSelector =
           `.${config.wodifyCalendarClassAlreadyEnrolledClass}`;
       const enrollSelector = `.${config.wodifyCalendarClassEnrollClass}`;
-      if (column.querySelector(unavailableSelector) !== null ||
-          column.querySelector(alreadyEnrolledSelector) !== null ||
-          column.querySelector(enrollSelector) === null) {
+      if (enrollActionColumn.querySelector(unavailableSelector) !== null ||
+          enrollActionColumn.querySelector(alreadyEnrolledSelector) !== null ||
+          enrollActionColumn.querySelector(enrollSelector) === null) {
         continue;
       }
 
-      const enrollAction = column.querySelector('a');
+      const enrollAction = enrollActionColumn.querySelector('a');
       if (enrollAction === null) {
         continue;
       }
@@ -151,8 +156,9 @@ async function sendErrorEmailNotification(mailgun, error, credentials) {
 }
 
 async function run(
-    wodifyCredentials, mailgunCredentials, enrollList, pollPeriodSeconds,
-    mailgun) {
+    wodifyCredentials, mailgunCredentials, enrollList, pollPeriodMilliseconds,
+    continuousPollBeforeDesiredClassMilliseconds,
+    continuousPollAfterDesiredClassMilliseconds, mailgun) {
   const browser = await puppeteer.launch();
   const page = await browser.newPage();
   await page.setViewport({width: VIEW_WIDTH, height: VIEW_HEIGHT});
@@ -168,7 +174,10 @@ async function run(
   log('Logged in.');
 
   let firstVisit = true;
-  const waitOptions = {waitUntil: ['networkidle0', 'domcontentloaded']};
+  const waitOptions = {
+    timeout: WODIFY_CALENDAR_LOAD_TIMEOUT_MILLISECONDS,
+    waitUntil: ['networkidle0', 'domcontentloaded']
+  };
   const enrollConfig = {
     tableId: WODIFY_CALENDAR_TABLE_ID,
     weekdays: WEEKDAYS,
@@ -183,27 +192,39 @@ async function run(
 
   while (true) {
     log('Checking available classes...');
-    let startTime = new Date().getTime();
+    let startDate = new Date();
 
-    if (firstVisit) {
-      await page.goto(WODIFY_CALENDAR_URI, waitOptions);
-    } else {
-      await page.reload(waitOptions);
+    try {
+      if (firstVisit) {
+        await page.goto(WODIFY_CALENDAR_URI, waitOptions);
+      } else {
+        await page.reload(waitOptions);
+      }
+    } catch (error) {
+      log(`Failed to load page: ${error}`);
+      log(`Waiting ${
+          WODIFY_CALENDAR_LOAD_TIMEOUT_RETRY_DELAY_MILLISECONDS /
+          1000} seconds to try again.`);
+      await new Promise(
+          resolve => {setTimeout(
+              resolve, WODIFY_CALENDAR_LOAD_TIMEOUT_RETRY_DELAY_MILLISECONDS)});
+      continue;
     }
     firstVisit = false;
 
     const desiredOpenClasses = await getDesiredOpenClasses(page, enrollConfig);
     log(`${desiredOpenClasses.length} desired classes available.`);
     for (const desiredClass of desiredOpenClasses) {
-      log(`Attempting to enroll in ${desiredClass.weekday}'s ${
-          desiredClass.time} ${desiredClass.program} class in ${
-          desiredClass.gymLocation}...`);
+      log(`Attempting to enroll in ${capitalize(desiredClass.weekday)}'s ${
+          desiredClass.time.toUpperCase()} ${
+          capitalize(desiredClass.program)} class in ${
+          capitalize(desiredClass.gymLocation)}...`);
       await page.click(`#${desiredClass.enrollActionId}`);
       await page.waitForSelector(`#${WODIFY_CALENDAR_BANNER_NOTIFICATION_ID}`);
     }
     if (0 < desiredOpenClasses.length) {
       log(`Finished attemting to enroll in ${
-          desiredOpenClasses.length} desired open class(es).`);
+          desiredOpenClasses.length} desired open classes.`);
       await page.screenshot({path: SCREENSHOT_FILE_PATH, fullPage: true});
     }
 
@@ -218,8 +239,40 @@ async function run(
       }
     }
 
-    const elapsedTime = new Date().getTime() - startTime;
-    const millisecondsUntilNextCheck = pollPeriodSeconds * 1000 - elapsedTime;
+    const endDate = new Date();
+    const millisecondsUntilNextCheck = (() => {
+      const elapsedTime = endDate - startDate;
+      const defaultDelayMilliseconds = pollPeriodMilliseconds - elapsedTime;
+      const weekday = WEEKDAYS[endDate.getDay()];
+      const enrollInfo = enrollList[weekday];
+      if (enrollInfo === undefined) return defaultDelayMilliseconds;
+      const timePattern = /(\d{1,2})\:(\d\d)\s(a|p)m/;
+      const classTime = enrollInfo['time'].toLowerCase().match(timePattern);
+      const afternoonClass = classTime[3] === 'p';
+      const classHours =
+          (parseInt(classTime[1]) % 12) + (afternoonClass ? 12 : 0);
+      const classMinutes = parseInt(classTime[2]);
+      const classDate = (() => {
+        let date = new Date(endDate);
+        date.setHours(classHours);
+        date.setMinutes(classMinutes);
+        date.setSeconds(0);
+        return date;
+      })();
+      const minContinuousPollDate = new Date(
+          classDate.getTime() - continuousPollBeforeDesiredClassMilliseconds);
+      const maxContinuousPollDate = new Date(
+          classDate.getTime() + continuousPollAfterDesiredClassMilliseconds);
+      if (minContinuousPollDate < endDate && endDate < maxContinuousPollDate) {
+        return 0;
+      }
+      const nextPollDate = new Date(endDate + defaultDelayMilliseconds);
+      if (endDate < minContinuousPollDate &&
+          minContinuousPollDate < nextPollDate) {
+        return minContinuousPollDate - endDate;
+      }
+      return defaultDelayMilliseconds;
+    })();
     log(`Waiting ${
         millisecondsUntilNextCheck /
         1000} seconds to check class availability again.`);
@@ -249,16 +302,26 @@ async function run(
   const emailNotificationRecipient = process.env.EMAIL_NOTIFICATION_RECIPIENT;
   const mailgunApiKey = process.env.MAILGUN_API_KEY;
   const mailgunDomain = process.env.MAILGUN_DOMAIN;
-  const pollPeriodSeconds =
-      process.env.POLL_PERIOD_SECONDS || DEFAULT_POLL_PERIOD_SECONDS;
+  const pollPeriodMilliseconds =
+      (process.env.POLL_PERIOD_SECONDS || DEFAULT_POLL_PERIOD_SECONDS) * 1000;
+  const continuousPollBeforeDesiredClassMilliseconds =
+      (process.env.CONTINUOUS_POLL_BEFORE_DESIRED_CLASS_SECONDS ||
+       DEFAULT_CONTINUOUS_POLL_BEFORE_DESIRED_CLASS_SECONDS) *
+      1000;
+  const continuousPollAfterDesiredClassMilliseconds =
+      (process.env.CONTINUOUS_POLL_AFTER_DESIRED_CLASS_SECONDS ||
+       DEFAULT_CONTINUOUS_POLL_AFTER_DESIRED_CLASS_SECONDS) *
+      1000;
 
   const enrollList = JSON.parse(fs.readFileSync(enrollListFile));
 
   if (wodifyUsername === undefined) {
-    throw new Error('Missing Wodify username.');
+    console.log('Missing Wodify username.');
+    process.exit(1);
   }
   if (wodifyPassword === undefined) {
-    throw new Error('Missing Wodify password.');
+    console.log('Missing Wodify password.');
+    process.exit(1);
   }
   const wodifyCredentials = {
     username: wodifyUsername,
@@ -266,15 +329,16 @@ async function run(
   };
 
   if (emailNotificationRecipient === undefined) {
-    log('Warning: Missing an email notification recipient. No email notification will be sent.');
+    log('Warning: Missing an email notification recipient. No email ' +
+        'notification will be sent.');
   } else {
     if (mailgunApiKey === undefined) {
-      throw new Error(
-          'Missing Mailgun API key. No email notification will be sent.');
+      log('Error: Missing Mailgun API key.');
+      process.exit(1);
     }
     if (mailgunDomain === undefined) {
-      throw new Error(
-          'Missing Mailgun domain. No email notification will be sent.');
+      log('Error Missing Mailgun domain.');
+      process.exit(1);
     }
   }
   const mailgunCredentials = {
@@ -293,10 +357,10 @@ async function run(
     });
   })();
 
-
   try {
-    run(wodifyCredentials, mailgunCredentials, enrollList, pollPeriodSeconds,
-        mailgun);
+    run(wodifyCredentials, mailgunCredentials, enrollList,
+        pollPeriodMilliseconds, continuousPollBeforeDesiredClassMilliseconds,
+        continuousPollAfterDesiredClassMilliseconds, mailgun);
   } catch (error) {
     sendErrorEmailNotification(mailgun, error, mailgunCredentials);
   }

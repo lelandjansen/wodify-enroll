@@ -25,14 +25,19 @@ EMAIL_NOTIFICATION_RECIPIENT="someone@example.com"
 MAILGUN_API_KEY="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxx-xxxxxxxx"
 MAILGUN_DOMAIN="example.com"
 
-# Optionally tune the polling period (default = 30 seconds)
-POLL_PERIOD_SECONDS=30
+# Tune the polling period (default = 60 seconds)
+POLL_PERIOD_SECONDS=60
+
+# Tune the interval around the the desired class time to poll continuously
+# (default = 300 seconds)
+CONTINUOUS_POLL_BEFORE_DESIRED_CLASS_SECONDS=300
+CONTINUOUS_POLL_AFTER_DESIRED_CLASS_SECONDS=300
 ```
 
 ### Enroll list
 Specify the classes in which you wish to enroll. The weekday keys should be
-written in lowercase. The `location`, `program`, and `time` values must match
-the text in Wodify's calendar but are case-insensitive.
+written in lowercase. The `location`, `program`, and `time` keys' values must
+match the text in Wodify's calendar but are case-insensitive.
 
 ```json
 enroll_list.json
