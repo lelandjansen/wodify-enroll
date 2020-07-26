@@ -26,8 +26,11 @@ EMAIL_NOTIFICATION_RECIPIENT="someone@example.com"
 MAILGUN_API_KEY="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxx-xxxxxxxx"
 MAILGUN_DOMAIN="example.com"
 
-# Tune the polling period (default = 60 seconds)
+# Tune the polling period (default = 60 seconds) to check class availability
 POLL_PERIOD_SECONDS=60
+
+# Tune the reset period (default = 3600 seconds) to reset the filters
+RESET_PERIOD_SECONDS=3600
 
 # Tune the interval around the the desired class time to poll continuously
 # (default = 300 seconds)

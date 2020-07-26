@@ -8,6 +8,7 @@ const puppeteer = require('puppeteer');
 const DEFAULT_CONTINUOUS_POLL_AFTER_ENROLLMENT_OPENS_SECONDS = 300;
 const DEFAULT_CONTINUOUS_POLL_BEFORE_ENROLLMENT_OPENS_SECONDS = 300;
 const DEFAULT_POLL_PERIOD_SECONDS = 60;
+const DEFAULT_RESET_PERIOD_SECONDS = 3600;
 const SCREENSHOT_FILE_PATH = 'enrolled.png';
 const VIEW_HEIGHT = 768;
 const VIEW_WIDTH = 1024;
@@ -22,6 +23,10 @@ const WODIFY_CALENDAR_CLASS_FULL_SUBSTRING = 'waitlist';
 const WODIFY_CALENDAR_CLASS_UNAVAILABLE_CLASS = 'icon-calendar--disabled';
 const WODIFY_CALENDAR_LOAD_TIMEOUT_MILLISECONDS = 20 * 1000;
 const WODIFY_CALENDAR_LOAD_TIMEOUT_RETRY_DELAY_MILLISECONDS = 5 * 1000;
+const WODIFY_CALENDAR_LOADING_BANNER_ID =
+    'AthleteTheme_wt6_block_wt11_RichWidgets_wt3_block_wtdivWait';
+const WODIFY_CALENDAR_RESET_BUTTON_ID =
+    'AthleteTheme_wt6_block_wtMainContent_wt9_wt12';
 const WODIFY_CALENDAR_TABLE_ID =
     'AthleteTheme_wt6_block_wtMainContent_wt9_wtClassTable';
 const WODIFY_CALENDAR_URI =
@@ -31,6 +36,7 @@ const WODIFY_LOGIN_PASSWORD_INPUT_ID = 'input[id="Input_Password"]';
 const WODIFY_LOGIN_SUBMIT_BUTTON_ID = 'button[type="submit"]';
 const WODIFY_LOGIN_URI = 'https://app.wodify.com/SignIn/Login';
 const WODIFY_LOGIN_USERNAME_INPUT_ID = 'input[id="Input_UserName"]';
+
 
 function log(message = '') {
   process.stderr.write(`[${new Date().toISOString()}] ${message}\n`);
@@ -103,14 +109,10 @@ async function getDesiredOpenClasses(page, config) {
       }
 
       const enrollAction = enrollActionColumn.querySelector('a');
-      if (enrollAction === null) {
-        continue;
-      }
+      if (enrollAction === null) continue;
       const classFull = enrollAction.title.toLowerCase().includes(
           config.wodifyCalendarClassFullSubstring);
-      if (classFull) {
-        continue
-      }
+      if (classFull) continue;
 
       desiredOpenClasses.push({
         weekday: weekday,
@@ -157,7 +159,7 @@ async function sendErrorEmailNotification(mailgun, error, credentials) {
 
 async function run(
     wodifyCredentials, mailgunCredentials, enrollList, pollPeriodMilliseconds,
-    enrollmentOpeningBeforeClassMilliseconds,
+    resetPeriodMilliseconds, enrollmentOpeningBeforeClassMilliseconds,
     continuousPollBeforeEnrollmentOpensMilliseconds,
     continuousPollAfterEnrollmentOpensMilliseconds, mailgun) {
   const browser = await puppeteer.launch();
@@ -191,6 +193,7 @@ async function run(
     enrollList: enrollList,
   };
 
+  let lastResetDate = new Date();
   while (true) {
     log('Checking available classes...');
     let startDate = new Date();
@@ -198,6 +201,7 @@ async function run(
     try {
       if (firstVisit) {
         await page.goto(WODIFY_CALENDAR_URI, waitOptions);
+        lastResetDate = startDate;
       } else {
         await page.reload(waitOptions);
       }
@@ -212,6 +216,18 @@ async function run(
       continue;
     }
     firstVisit = false;
+
+    if (resetPeriodMilliseconds <
+        startDate.getTime() - lastResetDate.getTime()) {
+      log('Resetting filters...');
+      lastResetDate = startDate;
+      await page.click(`#${WODIFY_CALENDAR_RESET_BUTTON_ID}`);
+      await page.waitForSelector(
+          `#${WODIFY_CALENDAR_LOADING_BANNER_ID}`, {visible: true});
+      await page.waitForSelector(
+          `#${WODIFY_CALENDAR_LOADING_BANNER_ID}`, {hidden: true});
+      log('Reset filters.');
+    }
 
     const desiredOpenClasses = await getDesiredOpenClasses(page, enrollConfig);
     log(`${desiredOpenClasses.length} desired classes available.`);
@@ -311,6 +327,8 @@ async function run(
   const mailgunDomain = process.env.MAILGUN_DOMAIN;
   const pollPeriodMilliseconds =
       (process.env.POLL_PERIOD_SECONDS || DEFAULT_POLL_PERIOD_SECONDS) * 1000;
+  const resetPeriodMilliseconds =
+      (process.env.RESET_PERIOD_SECONDS || DEFAULT_RESET_PERIOD_SECONDS) * 1000;
   const enrollmentOpeningBeforeClassMinutes =
       process.env.ENROLLMENT_OPENING_BEFORE_CLASS_MINUTES;
   const continuousPollBeforeEnrollmentOpensMilliseconds =
@@ -349,11 +367,11 @@ async function run(
         'notification will be sent.');
   } else {
     if (mailgunApiKey === undefined) {
-      log('Error: Missing Mailgun API key.');
+      log('Missing Mailgun API key.');
       process.exit(1);
     }
     if (mailgunDomain === undefined) {
-      log('Error Missing Mailgun domain.');
+      log('Missing Mailgun domain.');
       process.exit(1);
     }
   }
@@ -375,7 +393,8 @@ async function run(
 
   try {
     run(wodifyCredentials, mailgunCredentials, enrollList,
-        pollPeriodMilliseconds, enrollmentOpeningBeforeClassMilliseconds,
+        pollPeriodMilliseconds, resetPeriodMilliseconds,
+        enrollmentOpeningBeforeClassMilliseconds,
         continuousPollBeforeEnrollmentOpensMilliseconds,
         continuousPollAfterEnrollmentOpensMilliseconds, mailgun);
   } catch (error) {
